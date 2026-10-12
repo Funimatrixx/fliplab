@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#15121c">
+<title>FlipLab</title>
+<style>
+:root{--bg:#15121c;--panel:#221d2e;--line:#3a3250;--ink:#efe9ff;--dim:#9a90b5;--acc:#a66bff}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:15px system-ui,sans-serif;overscroll-behavior:none}
+body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{display:flex;align-items:center;justify-content:space-between;padding:8px 12px}
+h1{font-size:18px;margin:0;letter-spacing:.5px}
+#note{color:var(--dim);font-size:12px}
+main{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:0 8px}
+#view{background:#fff;max-width:100%;max-height:100%;aspect-ratio:4/3;touch-action:none;border-radius:6px;box-shadow:0 0 0 1px var(--line)}
+.bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 8px}
+button{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit}
+button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+input[type=color]{width:42px;height:38px;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:2px}
+input[type=range]{width:90px;accent-color:var(--acc)}
+label{color:var(--dim);font-size:12px;display:flex;align-items:center;gap:6px}
+#strip{display:flex;gap:6px;overflow-x:auto;padding:6px 8px 10px}
+#strip canvas{flex:none;width:72px;height:54px;border-radius:5px;border:2px solid var(--line);background:#fff}
+#strip canvas.on{border-color:var(--acc)}
+</style>
+</head>
+<body>
+<header><h1>FlipLab</h1><span id="note"></span></header>
+<main><canvas id="view"></canvas></main>
+
+<div class="bar">
+  <button id="pen" class="on">Pen</button>
+  <button id="eraser">Eraser</button>
+  <input type="color" id="color" value="#000000" aria-label="Color">
+  <label>Size <input type="range" id="size" min="1" max="40" value="6"></label>
+  <button id="undo">Undo</button>
+  <button id="onion" class="on">Onion skin</button>
+</div>
+<div class="bar">
+  <button id="prev">&lt;</button>
+  <span id="count">1 / 1</span>
+  <button id="next">&gt;</button>
+  <button id="add">New frame</button>
+  <button id="dup">Copy frame</button>
+  <button id="del">Delete</button>
+  <button id="clear">Clear</button>
+</div>
+<div class="bar">
+  <button id="play">Play</button>
+  <label>Speed <input type="range" id="fps" min="1" max="24" value="8"><span id="fpsv">8</span></label>
+  <button id="png">Save frame as PNG</button>
+</div>
+<div id="strip"></div>
+
+<script>
+const W=800,H=600;
+const view=document.getElementById('view'),vc=view.getContext('2d');
+view.width=W;view.height=H;
+const $=id=>document.getElementById(id);
+let frames=[mk()],cur=0,tool='pen',color='#000000',size=6,onion=true,playing=false,timer=null,fps=8,undoStack=[],drawing=false,last=null,st=null;
+
+function mk(){const c=document.createElement('canvas');c.width=W;c.height=H;return c}
+function note(t){$('note').textContent=t;clearTimeout(note.t);note.t=setTimeout(()=>$('note').textContent='',1800)}
+function ctx(){return frames[cur].getContext('2d')}
+
+function render(){
+  vc.globalAlpha=1;vc.fillStyle='#fff';vc.fillRect(0,0,W,H);
+  if(onion&&!playing&&cur>0){vc.globalAlpha=.3;vc.drawImage(frames[cur-1],0,0);vc.globalAlpha=1}
+  vc.drawImage(frames[cur],0,0);
+  $('count').textContent=(cur+1)+' / '+frames.length;
+}
+
+function strip(){
+  const s=$('strip');s.innerHTML='';
+  frames.forEach((f,i)=>{
+    const t=document.createElement('canvas');t.width=96;t.height=72;
+    const x=t.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,96,72);x.drawImage(f,0,0,96,72);
+    if(i===cur)t.className='on';
+    t.onclick=()=>{if(!playing){cur=i;undoStack=[];render();strip()}};
+    s.appendChild(t);
+  });
+  const on=s.querySelector('.on');if(on)on.scrollIntoView({inline:'center',block:'nearest'});
+}
+
+function pos(e){const r=view.getBoundingClientRect();return{x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height}}
+function line(a,b){
+  const c=ctx();
+  c.globalCompositeOperation=tool==='eraser'?'destination-out':'source-over';
+  c.strokeStyle=color;c.lineWidth=tool==='eraser'?size*2:size;
+  c.lineCap='round';c.lineJoin='round';
+  c.beginPath();c.moveTo(a.x,a.y);c.lineTo(b.x,b.y);c.stroke();
+}
+function pushUndo(){undoStack.push({i:cur,d:ctx().getImageData(0,0,W,H)});if(undoStack.length>15)undoStack.shift()}
+
+view.addEventListener('pointerdown',e=>{
+  if(playing)return;
+  view.setPointerCapture(e.pointerId);pushUndo();drawing=true;last=pos(e);
+  line(last,{x:last.x+.01,y:last.y});render();
+});
+view.addEventListener('pointermove',e=>{
+  if(!drawing)return;
+  const p=pos(e);line(last,p);last=p;render();
+});
+['pointerup','pointercancel'].forEach(t=>view.addEventListener(t,()=>{
+  if(drawing){drawing=false;strip();save()}
+}));
+
+function setTool(t){tool=t;$('pen').classList.toggle('on',t==='pen');$('eraser').classList.toggle('on',t==='eraser')}
+$('pen').onclick=()=>setTool('pen');
+$('eraser').onclick=()=>setTool('eraser');
+$('color').oninput=e=>{color=e.target.value;setTool('pen')};
+$('size').oninput=e=>size=+e.target.value;
+$('undo').onclick=()=>{
+  const u=undoStack.pop();if(!u||playing)return;
+  frames[u.i].getContext('2d').putImageData(u.d,0,0);cur=u.i;render();strip();save();
+};
+$('onion').onclick=()=>{onion=!onion;$('onion').classList.toggle('on',onion);render()};
+
+function go(i){if(playing)return;cur=Math.max(0,Math.min(frames.length-1,i));undoStack=[];render();strip()}
+$('prev').onclick=()=>go(cur-1);
+$('next').onclick=()=>go(cur+1);
+$('add').onclick=()=>{if(playing)return;frames.splice(cur+1,0,mk());go(cur+1);save()};
+$('dup').onclick=()=>{if(playing)return;const c=mk();c.getContext('2d').drawImage(frames[cur],0,0);frames.splice(cur+1,0,c);go(cur+1);save()};
+$('del').onclick=()=>{
+  if(playing)return;
+  if(frames.length===1){note('Need at least one frame');return}
+  frames.splice(cur,1);go(Math.min(cur,frames.length-1));save();
+};
+$('clear').onclick=()=>{if(playing)return;pushUndo();ctx().clearRect(0,0,W,H);render();strip();save()};
+
+function stop(){clearInterval(timer);playing=false;$('play').textContent='Play';$('play').classList.remove('on');render();strip()}
+function tick(){cur=(cur+1)%frames.length;render()}
+$('play').onclick=()=>{
+  if(playing){stop();return}
+  if(frames.length<2){note('Add another frame first');return}
+  playing=true;undoStack=[];$('play').textContent='Stop';$('play').classList.add('on');
+  timer=setInterval(tick,1000/fps);
+};
+$('fps').oninput=e=>{
+  fps=+e.target.value;$('fpsv').textContent=fps;
+  if(playing){clearInterval(timer);timer=setInterval(tick,1000/fps)}
+  save();
+};
+
+$('png').onclick=()=>{
+  const t=mk(),x=t.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,W,H);x.drawImage(frames[cur],0,0);
+  t.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='fliplab-frame-'+(cur+1)+'.png';a.click()});
+};
+
+function save(){
+  clearTimeout(st);
+  st=setTimeout(()=>{
+    try{localStorage.setItem('fliplab',JSON.stringify({fps,frames:frames.map(f=>f.toDataURL())}));note('Saved')}
+    catch(e){note('Too big to autosave')}
+  },700);
+}
+function load(){
+  try{
+    const d=JSON.parse(localStorage.getItem('fliplab'));
+    if(!d||!d.frames||!d.frames.length)return;
+    fps=d.fps||8;$('fps').value=fps;$('fpsv').textContent=fps;
+    frames=d.frames.map(()=>mk());
+    let n=0;
+    d.frames.forEach((u,i)=>{
+      const im=new Image();
+      im.onload=()=>{frames[i].getContext('2d').drawImage(im,0,0);if(++n===d.frames.length){cur=0;render();strip()}};
+      im.src=u;
+    });
+  }catch(e){}
+}
+load();render();strip();
+</script>
+</body>
+</html>
